@@ -1,20 +1,16 @@
 import os
 import random
 import asyncio
+from dataclasses import dataclass, field
+
 import discord
 from discord.ext import commands
 
-# ============================================================
-# USTAWIENIA HOSTINGU
-# ============================================================
-
-TOKEN = os.getenv("MTU1ODU3MTkxMjg0MDYxODAxNg.GpTLnF.v2JGbpMRrW5EsJhSEMP1GsFrvPvqaE4JC_BkJ8")
-THREAD_ID = int(os.getenv("THREAD_ID", "0"))
-
+# Token ustaw w zmiennej DISCORD_TOKEN w panelu hostingu.
+# THREAD_ID nie jest potrzebny: Bogin działa w dowolnym wątku.
+TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise RuntimeError("Brak zmiennej DISCORD_TOKEN w ustawieniach hostingu!")
-if THREAD_ID == 0:
-    raise RuntimeError("Ustaw prawidłową zmienną THREAD_ID w hostingu!")
 
 EXCLUDED_USERS = {
     1558587320461164678,
@@ -28,30 +24,32 @@ BOGIN_FORMS = [
     "Inferius", "Oni",
 ]
 
-# ============================================================
-# DISCORD I STAN GRY
-# ============================================================
-
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, case_insensitive=True)
 
-game_task = None
-riddikulus_active = False
-riddikulus_event = asyncio.Event()
+
+@dataclass
+class GameState:
+    task: asyncio.Task | None = None
+    riddikulus_active: bool = False
+    riddikulus_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
-def is_running():
-    return game_task is not None and not game_task.done()
+# Niezależna gra w każdym wątku (kluczem jest ID wątku).
+games: dict[int, GameState] = {}
+
+
+def is_thread(ctx):
+    return isinstance(ctx.channel, discord.Thread)
 
 
 async def get_players(thread: discord.Thread):
-    """Pobierz rzeczywistych użytkowników wątku, nie obiekty ThreadMember."""
     try:
         thread_members = await thread.fetch_members()
     except (discord.HTTPException, discord.Forbidden) as error:
-        print(f"Nie udało się pobrać członków wątku: {error}")
+        print(f"Nie udało się pobrać członków wątku {thread.id}: {error}")
         return []
 
     players = []
@@ -62,38 +60,32 @@ async def get_players(thread: discord.Thread):
         if member is None:
             try:
                 member = await thread.guild.fetch_member(thread_member.id)
-            except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+            except (discord.HTTPException, discord.Forbidden):
                 continue
-        if member.bot:
-            continue
-        players.append(member)
+        if not member.bot:
+            players.append(member)
     return players
 
 
-async def countdown(thread):
-    """Zwraca True, jeżeli ktokolwiek wpisze !riddikulus przed końcem liczenia."""
-    global riddikulus_active
-    riddikulus_event.clear()
-    riddikulus_active = True
+async def countdown(thread: discord.Thread, state: GameState):
+    state.riddikulus_event.clear()
+    state.riddikulus_active = True
     try:
         for number in (3, 2, 1, 0):
-            # Jeżeli zaklęcie wpłynęło pomiędzy dwiema wiadomościami:
-            if riddikulus_event.is_set():
+            if state.riddikulus_event.is_set():
                 return True
             await thread.send(str(number))
             try:
-                await asyncio.wait_for(riddikulus_event.wait(), timeout=1.0)
+                await asyncio.wait_for(state.riddikulus_event.wait(), timeout=1.0)
                 return True
             except asyncio.TimeoutError:
                 pass
-        return riddikulus_event.is_set()
+        return state.riddikulus_event.is_set()
     finally:
-        riddikulus_active = False
+        state.riddikulus_active = False
 
 
-async def run_game(thread):
-    """Jedna pętla zamiast rekurencyjnego uruchamiania rund."""
-    global game_task, riddikulus_active
+async def run_game(thread: discord.Thread, state: GameState):
     try:
         while True:
             players = await get_players(thread)
@@ -115,7 +107,7 @@ async def run_game(thread):
             attempt = 0
             while True:
                 attempt += 1
-                if await countdown(thread):
+                if await countdown(thread, state):
                     await thread.send(
                         "[*Po udanej próbie obezwładnienia Bogin wrócił do szafy.*]"
                     )
@@ -140,63 +132,63 @@ async def run_game(thread):
     except asyncio.CancelledError:
         raise
     except discord.DiscordException as error:
-        print(f"Błąd komunikacji z Discordem: {error}")
+        print(f"Błąd komunikacji z Discordem we wątku {thread.id}: {error}")
     except Exception as error:
-        print(f"Błąd podczas gry: {error}")
+        print(f"Błąd Bogina we wątku {thread.id}: {error}")
         raise
     finally:
-        riddikulus_active = False
-        riddikulus_event.clear()
-        if game_task is asyncio.current_task():
-            game_task = None
+        state.riddikulus_active = False
+        state.riddikulus_event.clear()
+        if games.get(thread.id) is state:
+            games.pop(thread.id, None)
 
 
 @bot.command(name="start")
 async def start(ctx):
-    global game_task
-    if ctx.channel.id != THREAD_ID:
+    if not is_thread(ctx):
+        await ctx.send("[*Bogina można uruchomić tylko w wątku Discorda.*]")
         return
-    if is_running():
-        await ctx.send("[*Bogin już grasuje! Najpierw trzeba go pokonać.*]")
+    if ctx.channel.id in games:
+        await ctx.send("[*Bogin już grasuje w tym wątku!*]")
         return
-    game_task = asyncio.create_task(run_game(ctx.channel))
+    state = GameState()
+    games[ctx.channel.id] = state
+    state.task = asyncio.create_task(run_game(ctx.channel, state))
 
 
 @bot.command(name="riddikulus")
 async def riddikulus(ctx):
-    if ctx.channel.id != THREAD_ID:
+    if not is_thread(ctx):
         return
-    if is_running() and riddikulus_active:
-        riddikulus_event.set()
+    state = games.get(ctx.channel.id)
+    if state and state.riddikulus_active:
+        state.riddikulus_event.set()
 
 
 @bot.command(name="stop")
 async def stop(ctx):
-    global game_task, riddikulus_active
-    if ctx.channel.id != THREAD_ID:
+    if not is_thread(ctx):
+        await ctx.send("[*Komenda !stop działa tylko w wątku Discorda.*]")
         return
-    if not is_running():
-        await ctx.send("[*Bogin aktualnie nie grasuje.*]")
+    state = games.get(ctx.channel.id)
+    if state is None:
+        await ctx.send("[*Bogin aktualnie nie grasuje w tym wątku.*]")
         return
-    task = game_task
-    game_task = None
-    riddikulus_active = False
-    riddikulus_event.set()
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    await ctx.send(
-        "[*Bogin został odesłany do szafy. Zabawa została zakończona.*]"
-    )
+    task = state.task
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    await ctx.send("[*Bogin został odesłany do szafy. Zabawa została zakończona.*]")
 
 
 @bot.event
 async def on_ready():
     print("--------------------------------------")
     print(f"Zalogowano jako: {bot.user}")
-    print("Bogin jest gotowy do zabawy!")
+    print("Bogin jest gotowy do zabawy w dowolnym wątku!")
     print("--------------------------------------")
 
 
