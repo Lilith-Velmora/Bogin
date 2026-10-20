@@ -328,20 +328,27 @@ async def wykluczeni(ctx):
     additional = "\n".join(f"• <@{user_id}> (`{user_id}`)" for user_id in sorted(extra_exclusions)) or "Brak"
     await ctx.send(f"🚫 **Wykluczeni z ataków Bogina**\n**Na stałe:**\n{permanent}\n\n**Dodani komendą:**\n{additional}")
 
+
 @bot.command(name="rzut")
 async def rzut(ctx):
     wynik = random.randint(1, 6)
     await ctx.send(
         f"🎲 {ctx.author.mention} rzuca kością K6! "
         f"Wynik: **{wynik}**"
+    )
 
-        @bot.command(name="wyczyść")
+
+@bot.command(name="wyczyść")
 @commands.has_permissions(administrator=True)
 async def wyczysc(ctx, *, nazwy_kanalow: str = None):
     if not nazwy_kanalow:
         await ctx.send(
-            "Podaj nazwy kanałów, np. `!wyczyść ogłoszenia`."
+            "Podaj nazwy kanałów oddzielone przecinkami, "
+            "np. `!wyczyść ogłoszenia, pogaduchy`."
         )
+        return
+
+    if ctx.guild is None:
         return
 
     nazwy = [n.strip().lstrip("#") for n in nazwy_kanalow.split(",")]
@@ -380,6 +387,7 @@ async def wyczysc(ctx, *, nazwy_kanalow: str = None):
 async def wyczysc_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("⛔ Ta komenda wymaga uprawnień administratora.")
+
 @bot.event
 async def on_ready():
     print("--------------------------------------")
