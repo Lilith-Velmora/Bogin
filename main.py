@@ -328,7 +328,12 @@ async def wykluczeni(ctx):
     additional = "\n".join(f"• <@{user_id}> (`{user_id}`)" for user_id in sorted(extra_exclusions)) or "Brak"
     await ctx.send(f"🚫 **Wykluczeni z ataków Bogina**\n**Na stałe:**\n{permanent}\n\n**Dodani komendą:**\n{additional}")
 
-
+@bot.command(name="rzut")
+async def rzut(ctx):
+    wynik = random.randint(1, 6)
+    await ctx.send(
+        f"🎲 {ctx.author.mention} rzuca kością K6! "
+        f"Wynik: **{wynik}**"
 @bot.event
 async def on_ready():
     print("--------------------------------------")
