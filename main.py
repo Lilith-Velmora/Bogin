@@ -380,7 +380,7 @@ async def wyczysc(ctx, *, nazwy_kanalow: str = None):
                 f"⚠️ Wystąpił błąd przy czyszczeniu {kanal.mention}."
             )
 
-    await ctx.send("\n".join(wyniki))
+    await ctx.send("\n".join(wyniki)
 
 
 @wyczysc.error
