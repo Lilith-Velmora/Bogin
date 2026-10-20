@@ -334,6 +334,52 @@ async def rzut(ctx):
     await ctx.send(
         f"🎲 {ctx.author.mention} rzuca kością K6! "
         f"Wynik: **{wynik}**"
+
+        @bot.command(name="wyczyść")
+@commands.has_permissions(administrator=True)
+async def wyczysc(ctx, *, nazwy_kanalow: str = None):
+    if not nazwy_kanalow:
+        await ctx.send(
+            "Podaj nazwy kanałów, np. `!wyczyść ogłoszenia`."
+        )
+        return
+
+    nazwy = [n.strip().lstrip("#") for n in nazwy_kanalow.split(",")]
+    wyniki = []
+
+    for nazwa in nazwy:
+        kanal = discord.utils.find(
+            lambda c: isinstance(c, discord.TextChannel)
+            and c.name.casefold() == nazwa.casefold(),
+            ctx.guild.text_channels
+        )
+
+        if kanal is None:
+            wyniki.append(f"❌ Nie znaleziono kanału: `{nazwa}`")
+            continue
+
+        try:
+            usuniete = await kanal.purge(limit=None, bulk=False)
+            wyniki.append(
+                f"✅ Wyczyściłam {kanal.mention} "
+                f"({len(usuniete)} wiadomości)."
+            )
+        except discord.Forbidden:
+            wyniki.append(
+                f"⛔ Nie mam uprawnień do czyszczenia {kanal.mention}."
+            )
+        except discord.HTTPException:
+            wyniki.append(
+                f"⚠️ Wystąpił błąd przy czyszczeniu {kanal.mention}."
+            )
+
+    await ctx.send("\n".join(wyniki))
+
+
+@wyczysc.error
+async def wyczysc_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("⛔ Ta komenda wymaga uprawnień administratora.")
 @bot.event
 async def on_ready():
     print("--------------------------------------")
