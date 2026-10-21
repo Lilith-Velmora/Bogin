@@ -484,6 +484,7 @@ async def usun_watki_error(ctx, error):
 # ============================================================
 # LOGI WIADOMOŚCI
 # ============================================================
+LOG_CHANNEL_ID = 1562477162882269315
 # Plik z archiwum wiadomości
 ARCHIWUM_PLIK = Path("archiwum_wiadomosci.json")
 
