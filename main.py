@@ -484,26 +484,64 @@ async def usun_watki_error(ctx, error):
 import discord
 from discord.ext import commands
 
-# Konfiguracja uprawnień (Intents)
-intents = discord.Intents.default()
-intents.message_content = True  # Wymagane do odczytu treści wiadomości
-intents.messages = True         # Wymagane do nasłuchiwania zdarzeń wiadomości
+import sqlite3
+import discord
+from discord.ext import commands
 
-# Tworzenie instancji bota (prefiks komend to '!')
+# --- KONFIGURACJA BAZY DANYCH ---
+def init_db():
+    conn = sqlite3.connect('messages.db')
+    cursor = conn.cursor()
+    # Tabela do przechowywania ID wiadomości oraz jej treści
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            message_id INTEGER PRIMARY KEY,
+            content TEXT,
+            author_id INTEGER,
+            channel_id INTEGER
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# --- KONFIGURACJA BOTA ---
+intents = discord.Intents.default()
+intents.message_content = True
+intents.messages = True
+
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# ID kanału, na który bot ma wysyłać logi (wpisz tutaj swoje ID kanału)
-LOG_CHANNEL_ID = 1562477162882269315
+# ID kanału logów (zmień na swoje)
+LOG_CHANNEL_ID = 123456789012345678  
 
 @bot.event
 async def on_ready():
     print(f'Zalogowano jako {bot.user.name} (ID: {bot.user.id})')
-    print('Bot jest gotowy do logowania wiadomości!')
+    print('Bot z bazą danych SQLite jest gotowy!')
 
-# Event: Usunięta wiadomość
+# Zapisywanie każdej nowej wiadomości do bazy danych
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    conn = sqlite3.connect('messages.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        OR INSERT INTO messages (message_id, content, author_id, channel_id)
+        VALUES (?, ?, ?, ?)
+    ''', (message.id, message.content, message.author.id, message.channel.id))
+    conn.commit()
+    conn.close()
+
+    # Ważne: pozwala botowi przetwarzać również inne eventy/komendy
+    await bot.process_commands(message)
+
+# Event: Usunięta wiadomość (pobiera treść z bazy danych)
 @bot.event
 async def on_message_delete(message):
-    # Ignorujemy wiadomości wysłane przez boty, aby nie tworzyć spamu
     if message.author.bot:
         return
 
@@ -511,7 +549,16 @@ async def on_message_delete(message):
     if not log_channel:
         return
 
-    # Tworzenie embeda z informacjami o usunięciu
+    # Pobieranie treści z bazy danych
+    conn = sqlite3.connect('messages.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT content FROM messages WHERE message_id = ?', (message.id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    # Jeśli wiadomość była w bazie, bierzemy jej treść, w przeciwnym razie fallback
+    content = row[0] if row and row[0] else (message.content if message.content else "Brak treści tekstowej / załącznik")
+
     embed = discord.Embed(
         title="🗑️ Usunięto wiadomość",
         color=discord.Color.red(),
@@ -519,9 +566,6 @@ async def on_message_delete(message):
     )
     embed.add_field(name="Autor", value=f"{message.author} (ID: {message.author.id})", inline=False)
     embed.add_field(name="Kanał", value=message.channel.mention, inline=False)
-    
-    # Obsługa wiadomości zawierających tylko załączniki / brak treści tekstowej
-    content = message.content if message.content else "Brak treści tekstowej (mogł to być sam załącznik)"
     embed.add_field(name="Treść", value=content, inline=False)
     
     await log_channel.send(embed=embed)
@@ -529,7 +573,6 @@ async def on_message_delete(message):
 # Event: Edytowana wiadomość
 @bot.event
 async def on_message_edit(before, after):
-    # Ignorujemy boty oraz sytuacje, gdy treść się nie zmieniła (np. embed się załadował)
     if before.author.bot or before.content == after.content:
         return
 
@@ -537,7 +580,6 @@ async def on_message_edit(before, after):
     if not log_channel:
         return
 
-    # Tworzenie embeda z informacjami o edycji
     embed = discord.Embed(
         title="✏️ Edytowano wiadomość",
         color=discord.Color.orange(),
@@ -547,12 +589,9 @@ async def on_message_edit(before, after):
     embed.add_field(name="Kanał", value=before.channel.mention, inline=False)
     embed.add_field(name="Przed edycją", value=before.content if before.content else "Brak", inline=False)
     embed.add_field(name="Po edycji", value=after.content if after.content else "Brak", inline=False)
-    
-    # Link do wiadomości
     embed.add_field(name="Link", value=f"[Przejdź do wiadomości]({after.jump_url})", inline=False)
 
     await log_channel.send(embed=embed)
-
 @bot.event
 async def on_ready():
     print("--------------------------------------")
