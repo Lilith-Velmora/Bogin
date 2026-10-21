@@ -529,10 +529,11 @@ async def on_message(message):
 
     conn = sqlite3.connect('messages.db')
     cursor = conn.cursor()
-    cursor.execute('''
-        OR INSERT INTO messages (message_id, content, author_id, channel_id)
+   cursor.execute('''
+        INSERT OR IGNORE INTO messages (message_id, content, author_id, channel_id)
         VALUES (?, ?, ?, ?)
     ''', (message.id, message.content, message.author.id, message.channel.id))
+
     conn.commit()
     conn.close()
 
