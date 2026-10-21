@@ -484,6 +484,55 @@ async def usun_watki_error(ctx, error):
 # ============================================================
 # LOGI WIADOMOŚCI
 # ============================================================
+# Plik z archiwum wiadomości
+ARCHIWUM_PLIK = Path("archiwum_wiadomosci.json")
+
+# Pamięć wiadomości na czas działania bota
+archiwum_wiadomosci = {}
+
+
+def zapisz_archiwum():
+    """Zapisuje archiwum wiadomości do pliku JSON."""
+    try:
+        ARCHIWUM_PLIK.write_text(
+            json.dumps(
+                archiwum_wiadomosci,
+                ensure_ascii=False,
+                indent=2
+            ),
+            encoding="utf-8"
+        )
+    except Exception as e:
+        print(f"Błąd zapisu archiwum wiadomości: {e}")
+
+
+def wczytaj_archiwum():
+    """Wczytuje wcześniejsze archiwum, jeśli plik istnieje."""
+    global archiwum_wiadomosci
+
+    try:
+        if ARCHIWUM_PLIK.exists():
+            archiwum_wiadomosci = json.loads(
+                ARCHIWUM_PLIK.read_text(encoding="utf-8")
+            )
+    except Exception as e:
+        print(f"Błąd odczytu archiwum wiadomości: {e}")
+
+
+@bot.listen("on_message")
+async def archiwizuj_wiadomosc(message):
+    if message.author.bot:
+        return
+
+    archiwum_wiadomosci[str(message.id)] = {
+        "autor": str(message.author),
+        "autor_id": message.author.id,
+        "kanal_id": message.channel.id,
+        "tresc": message.content,
+        "zalaczniki": [a.url for a in message.attachments]
+    }
+
+    zapisz_archiwum()
 @bot.event
 async def on_ready():
     print("--------------------------------------")
