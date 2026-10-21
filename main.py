@@ -388,7 +388,7 @@ async def wyczysc_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("⛔ Ta komenda wymaga uprawnień administratora.")
 
-@bot.command(name="usuń_wątki")
+@bot.command(name="usun_watki")
 @commands.has_permissions(administrator=True)
 async def usun_watki(ctx, kanal: discord.TextChannel = None):
     if kanal is None:
