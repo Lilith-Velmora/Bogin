@@ -533,6 +533,63 @@ async def archiwizuj_wiadomosc(message):
     }
 
     zapisz_archiwum()
+    @bot.listen("on_raw_message_edit")
+async def log_edytowanej_wiadomosci(payload):
+    wiadomosc_id = str(payload.message_id)
+    stara = archiwum_wiadomosci.get(wiadomosc_id)
+
+    nowa_tresc = payload.data.get("content")
+    if nowa_tresc is None:
+        return
+
+    kanal = bot.get_channel(payload.channel_id)
+    kanal_nazwa = getattr(kanal, "name", str(payload.channel_id))
+
+    if stara is None:
+        stara_tresc = "(brak wcześniejszego zapisu)"
+        autor = "Nieznany"
+    else:
+        stara_tresc = stara.get("tresc", "")
+        autor = stara.get("autor", "Nieznany")
+
+    if stara_tresc == nowa_tresc:
+        return
+
+    print(
+        f"[EDYCJA] {autor} | kanał: {kanal_nazwa} | "
+        f"ID: {wiadomosc_id}\n"
+        f"Przed: {stara_tresc}\n"
+        f"Po: {nowa_tresc}"
+    )
+
+    if stara is not None:
+        stara["tresc"] = nowa_tresc
+        zapisz_archiwum()
+
+
+@bot.listen("on_raw_message_delete")
+async def log_usunietej_wiadomosci(payload):
+    wiadomosc_id = str(payload.message_id)
+    stara = archiwum_wiadomosci.pop(wiadomosc_id, None)
+
+    kanal = bot.get_channel(payload.channel_id)
+    kanal_nazwa = getattr(kanal, "name", str(payload.channel_id))
+
+    if stara is None:
+        autor = "Nieznany"
+        tresc = "(brak wcześniejszego zapisu)"
+    else:
+        autor = stara.get("autor", "Nieznany")
+        tresc = stara.get("tresc", "")
+
+    print(
+        f"[USUNIĘCIE] {autor} | kanał: {kanal_nazwa} | "
+        f"ID: {wiadomosc_id}\n"
+        f"Treść: {tresc}"
+    )
+
+    zapisz_archiwum()
+
 @bot.event
 async def on_ready():
     print("--------------------------------------")
