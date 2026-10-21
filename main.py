@@ -514,7 +514,7 @@ intents.messages = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # ID kanału logów (zmień na swoje)
-LOG_CHANNEL_ID = 123456789012345678  
+LOG_CHANNEL_ID = 1562477162882269315
 
 @bot.event
 async def on_ready():
