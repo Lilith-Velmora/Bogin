@@ -388,6 +388,98 @@ async def wyczysc_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("⛔ Ta komenda wymaga uprawnień administratora.")
 
+@bot.command(name="usuń_wątki")
+@commands.has_permissions(administrator=True)
+async def usun_watki(ctx, kanal: discord.TextChannel = None):
+    if kanal is None:
+        await ctx.send(
+            "❗ Podaj kanał, np. `!usuń_wątki #nazwa-kanału`."
+        )
+        return
+
+    # Zbierz aktywne i zarchiwizowane wątki
+    watki = {}
+
+    for watek in kanal.threads:
+        watki[watek.id] = watek
+
+    try:
+        async for watek in kanal.archived_threads(limit=None):
+            watki[watek.id] = watek
+
+        # Dodaj dostępne zarchiwizowane wątki prywatne
+        async for watek in kanal.archived_threads(
+            private=True, limit=None
+        ):
+            watki[watek.id] = watek
+
+    except discord.Forbidden:
+        await ctx.send(
+            "❌ Brak uprawnień do odczytu wątków na tym kanale."
+        )
+        return
+    except discord.HTTPException as e:
+        await ctx.send(f"❌ Błąd podczas pobierania wątków: {e}")
+        return
+
+    if not watki:
+        await ctx.send(
+            f"📂 Nie znaleziono wątków na kanale {kanal.mention}."
+        )
+        return
+
+    await ctx.send(
+        f"⚠️ Znaleziono **{len(watki)}** wątków na "
+        f"{kanal.mention}.\n"
+        "Aby je usunąć, wpisz `TAK` w ciągu 30 sekund."
+    )
+
+    def sprawdz(m):
+        return (
+            m.author.id == ctx.author.id
+            and m.channel.id == ctx.channel.id
+            and m.content.upper() == "TAK"
+        )
+
+    try:
+        await bot.wait_for(
+            "message", check=sprawdz, timeout=30.0
+        )
+    except asyncio.TimeoutError:
+        await ctx.send("⌛ Anulowano usuwanie wątków.")
+        return
+
+    usuniete = 0
+    bledy = 0
+
+    for watek in watki.values():
+        try:
+            await watek.delete(
+                reason=f"Usunięcie wątków przez {ctx.author}"
+            )
+            usuniete += 1
+        except (discord.Forbidden, discord.HTTPException):
+            bledy += 1
+
+    await ctx.send(
+        "🗑️ **Zakończono usuwanie wątków!**\n"
+        f"✅ Usunięto: **{usuniete}**\n"
+        f"❌ Nie udało się usunąć: **{bledy}**"
+    )
+
+
+@usun_watki.error
+async def usun_watki_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send(
+            "⛔ Ta komenda jest tylko dla administratorów."
+        )
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send(
+            "❗ Nie rozpoznaję kanału. Oznacz go przez #."
+        )
+    else:
+        raise error
 @bot.event
 async def on_ready():
     print("--------------------------------------")
