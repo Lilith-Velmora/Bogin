@@ -863,6 +863,235 @@ async def usun_watki_error(ctx, error):
     else:
         raise error
 
+# ============================================================
+# DODATKOWE LOGI ADMINISTRACYJNE UH
+# Odejścia, wyrzucenia, bany, timeouty, nicki i rangi
+# Wklej przed bot.run(TOKEN)
+# ============================================================
+
+async def uh_log_admin(guild, title, description, color, fields=None):
+    """Wysyła log administracyjny na istniejący kanał logów."""
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color,
+        timestamp=discord.utils.utcnow()
+    )
+
+    if fields:
+        for name, value in fields:
+            embed.add_field(
+                name=name,
+                value=str(value)[:1024],
+                inline=False
+            )
+
+    embed.set_footer(text=f"Serwer: {guild.name}")
+
+    # Korzystamy z istniejącej funkcji wysyłającej logi.
+    await send_log(embed)
+
+
+async def uh_audit(guild, action, target_id, seconds=20):
+    """Próbuje ustalić sprawcę działania z Audit Log."""
+    now = discord.utils.utcnow()
+
+    try:
+        async for entry in guild.audit_logs(limit=15, action=action):
+            if getattr(entry.target, "id", None) != target_id:
+                continue
+
+            if (now - entry.created_at).total_seconds() > seconds:
+                continue
+
+            return entry
+
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"[UH LOGI] Nie można odczytać Audit Log: {exc}")
+
+    return None
+
+
+def uh_actor(entry):
+    if entry is None or entry.user is None:
+        return "Nie udało się ustalić"
+
+    return f"{entry.user} (`{entry.user.id}`)"
+
+
+# ------------------------------------------------------------
+# ODEJŚCIE LUB WYRZUCENIE
+# ------------------------------------------------------------
+
+@bot.listen("on_member_remove")
+async def uh_member_leave(member):
+    await asyncio.sleep(1.5)
+
+    entry = await uh_audit(
+        member.guild,
+        discord.AuditLogAction.kick,
+        member.id
+    )
+
+    if entry:
+        await uh_log_admin(
+            member.guild,
+            "👢 Wyrzucenie z serwera",
+            f"**Użytkownik:** {member} (`{member.id}`)\n"
+            f"**Wyrzucił:** {uh_actor(entry)}\n"
+            f"**Powód:** {entry.reason or 'Nie podano'}",
+            discord.Color.orange()
+        )
+    else:
+        await uh_log_admin(
+            member.guild,
+            "📤 Użytkownik opuścił serwer",
+            f"**Użytkownik:** {member} (`{member.id}`)",
+            discord.Color.dark_red()
+        )
+
+
+# ------------------------------------------------------------
+# BAN
+# ------------------------------------------------------------
+
+@bot.listen("on_member_ban")
+async def uh_member_ban(guild, user):
+    await asyncio.sleep(0.7)
+
+    entry = await uh_audit(
+        guild, discord.AuditLogAction.ban, user.id
+    )
+
+    await uh_log_admin(
+        guild,
+        "🔨 Ban użytkownika",
+        f"**Użytkownik:** {user} (`{user.id}`)\n"
+        f"**Zbanował:** {uh_actor(entry)}\n"
+        f"**Powód:** {entry.reason if entry and entry.reason else 'Nie podano'}",
+        discord.Color.red()
+    )
+
+
+# ------------------------------------------------------------
+# ODBANOWANIE
+# ------------------------------------------------------------
+
+@bot.listen("on_member_unban")
+async def uh_member_unban(guild, user):
+    await asyncio.sleep(0.7)
+
+    entry = await uh_audit(
+        guild, discord.AuditLogAction.unban, user.id
+    )
+
+    await uh_log_admin(
+        guild,
+        "🔓 Odbanowanie użytkownika",
+        f"**Użytkownik:** {user} (`{user.id}`)\n"
+        f"**Odbanował:** {uh_actor(entry)}",
+        discord.Color.green()
+    )
+
+
+# ------------------------------------------------------------
+# ZMIANA NICKU, RANGI I TIMEOUTU
+# ------------------------------------------------------------
+
+@bot.listen("on_member_update")
+async def uh_member_update(before, after):
+    guild = after.guild
+    user_id = after.id
+
+    # ZMIANA NICKU
+    if before.nick != after.nick:
+        entry = await uh_audit(
+            guild,
+            discord.AuditLogAction.member_update,
+            user_id
+        )
+
+        await uh_log_admin(
+            guild,
+            "✏️ Zmiana nicku",
+            f"**Użytkownik:** {after.mention} (`{user_id}`)\n"
+            f"**Poprzedni nick:** {before.nick or before.name}\n"
+            f"**Nowy nick:** {after.nick or after.name}\n"
+            f"**Zmienił:** {uh_actor(entry)}",
+            discord.Color.blue()
+        )
+
+    # NADANIE I ZDJĘCIE RANG
+    old_roles = {r.id: r for r in before.roles}
+    new_roles = {r.id: r for r in after.roles}
+
+    added_roles = [
+        r for rid, r in new_roles.items()
+        if rid not in old_roles and not r.is_default()
+    ]
+
+    removed_roles = [
+        r for rid, r in old_roles.items()
+        if rid not in new_roles and not r.is_default()
+    ]
+
+    if added_roles or removed_roles:
+        entry = await uh_audit(
+            guild,
+            discord.AuditLogAction.member_role_update,
+            user_id
+        )
+
+        for role in added_roles:
+            await uh_log_admin(
+                guild,
+                "🎭 Nadanie rangi",
+                f"**Komu:** {after.mention} (`{user_id}`)\n"
+                f"**Ranga:** {role.name}\n"
+                f"**Nadał:** {uh_actor(entry)}",
+                discord.Color.green()
+            )
+
+        for role in removed_roles:
+            await uh_log_admin(
+                guild,
+                "🗑️ Zdjęcie rangi",
+                f"**Komu:** {after.mention} (`{user_id}`)\n"
+                f"**Ranga:** {role.name}\n"
+                f"**Zdjął:** {uh_actor(entry)}",
+                discord.Color.orange()
+            )
+
+    # TIMEOUT / WYCISZENIE CZASOWE
+    old_timeout = before.timed_out_until
+    new_timeout = after.timed_out_until
+
+    if old_timeout != new_timeout:
+        entry = await uh_audit(
+            guild,
+            discord.AuditLogAction.member_update,
+            user_id
+        )
+
+        if new_timeout is not None:
+            await uh_log_admin(
+                guild,
+                "🔇 Wyciszenie czasowe",
+                f"**Komu:** {after.mention} (`{user_id}`)\n"
+                f"**Do:** {discord.utils.format_dt(new_timeout, style='F')}\n"
+                f"**Sprawca:** {uh_actor(entry)}\n"
+                f"**Powód:** {entry.reason if entry and entry.reason else 'Nie podano'}",
+                discord.Color.orange()
+            )
+        else:
+            await uh_log_admin(
+                guild,
+                "🔊 Zdjęcie wyciszenia czasowego",
+                f"**Komu:** {after.mention} (`{user_id}`)\n"
+                f"**Zdjął:** {uh_actor(entry)}",
+                discord.Color.green()
+            )
+
 
 # ============================================================
 # URUCHOMIENIE — TYLKO RAZ, NA KOŃCU PLIKU
