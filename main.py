@@ -1945,6 +1945,113 @@ async def uh_register_nick_views():
         NICK_APPROVAL_CHANNEL_ID
     )
 
+import re
+import discord
+
+# ============================================================
+# CIEN — AUTOMATYCZNA MODERACJA PRZEKLENSTW UH
+# ============================================================
+
+# Role posiadajace immunitet
+ROLE_IMMUNITETU_CIENIA = {
+    "Dyrektor",
+    "Wicedyrektor",
+    "Mat",
+}
+
+# Lista przeklenstw i ich typowych odmian
+PRZEKLENSTWA = [
+    r"kurw\w*",
+    r"jeb\w*",
+    r"pierd\w*",
+    r"chuj\w*",
+    r"chu[jx]\w*",
+    r"spierdal\w*",
+    r"wypierdal\w*",
+    r"zajeb\w*",
+    r"pojeb\w*",
+    r"skurwysyn\w*",
+    r"skurwiel\w*",
+    r"dziwk\w*",
+    r"szmat\w*",
+]
+
+WZOR_PRZEKLENSTW = re.compile(
+    r"(?<!\w)(?:" + "|".join(PRZEKLENSTWA) + r")(?!\w)",
+    re.IGNORECASE
+)
+
+# Tresc ostrzezenia
+KOMUNIKAT_CIENIA = (
+    "🌑 Cień wyłonił się z mroku i spryskał "
+    "{osoba} wodą. Co to za słownictwo?!! "
+    "Proszę zwracać uwagę na używany język!! 💦"
+)
+
+
+@bot.listen("on_message")
+async def cien_straznik_jezyka(message: discord.Message):
+
+    # Pomijaj boty
+    if message.author.bot:
+        return
+
+    # Pomijaj wiadomosci prywatne
+    if message.guild is None:
+        return
+
+    # Immunitet dyrekcji: Dyrektor, Wicedyrektor, Mat
+    role_uzytkownika = {
+        role.name.casefold()
+        for role in message.author.roles
+    }
+
+    role_immunitetu = {
+        nazwa.casefold()
+        for nazwa in ROLE_IMMUNITETU_CIENIA
+    }
+
+    if role_uzytkownika & role_immunitetu:
+        return
+
+    # Sprawdz tresc wiadomosci
+    if not WZOR_PRZEKLENSTW.search(message.content):
+        return
+
+    # Usun wiadomosc zawierajaca przeklenstwo
+    try:
+        await message.delete()
+
+    except discord.Forbidden:
+        print(
+            "[CIEN] Brak uprawnienia Manage Messages "
+            f"na kanale {message.channel.id}."
+        )
+        return
+
+    except discord.NotFound:
+        return
+
+    except discord.HTTPException as error:
+        print(f"[CIEN] Nie udalo sie usunac wiadomosci: {error}")
+        return
+
+    # Wyslij ostrzezenie na tym samym kanale
+    try:
+        await message.channel.send(
+            KOMUNIKAT_CIENIA.format(
+                osoba=message.author.mention
+            ),
+            allowed_mentions=discord.AllowedMentions(
+                users=True,
+                roles=False,
+                everyone=False
+            )
+        )
+
+    except discord.HTTPException as error:
+        print(f"[CIEN] Nie udalo sie wyslac ostrzezenia: {error}")
+
 
 # ============================================================
 # URUCHOMIENIE — TYLKO RAZ, NA KOŃCU PLIKU
