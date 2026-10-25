@@ -1355,7 +1355,7 @@ def generuj_legitymacje(member, dom):
     # Nagłówek
     rysuj.text(
         (70, 45),
-        "UNIWERSYTET HOGWART",
+        "UNIWERSYTET HUNCWOTÓW",
         font=czcionka_uh(36, True),
         fill=(235, 235, 242),
     )
