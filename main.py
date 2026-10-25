@@ -1948,95 +1948,225 @@ async def uh_register_nick_views():
 import re
 import discord
 
+import re
+import unicodedata
+import discord
+
 # ============================================================
-# CIEN — AUTOMATYCZNA MODERACJA PRZEKLENSTW UH
+# CIEŃ — STRAŻNIK JĘZYKA UH
 # ============================================================
 
-# Role posiadajace immunitet
+# Rangi odporne na działanie Cienia
 ROLE_IMMUNITETU_CIENIA = {
-    "Dyrektor",
-    "Wicedyrektor",
-    "Mat",
+    "dyrektor",
+    "wicedyrektor",
+    "mat",
 }
 
-# Lista przeklenstw i ich typowych odmian
+# Rdzenie i popularne warianty przekleństw.
+# Filtr nie może zagwarantować wykrycia wszystkich przekleństw
+# ani wszystkich języków i zapisów fonetycznych.
 PRZEKLENSTWA = [
-    r"kurw\w*",
-    r"jeb\w*",
-    r"pierd\w*",
-    r"chuj\w*",
-    r"chu[jx]\w*",
-    r"spierdal\w*",
-    r"wypierdal\w*",
-    r"zajeb\w*",
-    r"pojeb\w*",
-    r"skurwysyn\w*",
-    r"skurwiel\w*",
-    r"dziwk\w*",
-    r"szmat\w*",
+    # Polski
+    "kurw",
+    "kvrw",
+    "qwa",
+    "qva",
+    "jeb",
+    "jeba",
+    "jebi",
+    "jebac",
+    "pierd",
+    "chuj",
+    "huj",
+    "chu j",
+    "spierdal",
+    "wypierdal",
+    "zajeb",
+    "pojeb",
+    "skurwysyn",
+    "skurwiel",
+    "dziwk",
+    "szmat",
+    "sukinsyn",
+    "cipa",
+    "cipk",
+    "fiut",
+    "kutas",
+    "dupek",
+    "debil",
+    "idiot",
+    "gown",
+    "gówno",
+    "pizd",
+    "pizda",
+    "pizdu",
+    "pizdy",
+
+    # Angielski
+    "fuck",
+    "fucking",
+    "fucker",
+    "motherfucker",
+    "shit",
+    "bullshit",
+    "bitch",
+    "bastard",
+    "asshole",
+    "damn",
+    "crap",
+
+    # Francuski i hiszpański
+    "merde",
+    "putain",
+    "mierda",
+    "joder",
+    "puta",
+
+    # Niemiecki
+    "scheisse",
+    "scheiße",
+    "arschloch",
+    "ficken",
+
+    # Rosyjski — cyrylica
+    "бля",
+    "бляд",
+    "хуй",
+    "пизд",
+    "сука",
+    "мудак",
+    "еб",
+
+    # Popularne zapisy łacińskie z rosyjskiego
+    "blyat",
+    "blyad",
+    "suka",
+    "cyka",
+    "huy",
+    "hui",
+    "pidor",
 ]
 
-WZOR_PRZEKLENSTW = re.compile(
-    r"(?<!\w)(?:" + "|".join(PRZEKLENSTWA) + r")(?!\w)",
-    re.IGNORECASE
-)
+# Zamiana znaków używanych do omijania filtra
+ZAMIENNIKI = str.maketrans({
+    "0": "o",
+    "1": "i",
+    "!": "i",
+    "3": "e",
+    "4": "a",
+    "@": "a",
+    "5": "s",
+    "$": "s",
+    "7": "t",
+    "8": "b",
+    "9": "g",
+    "€": "e",
+    "і": "i",
+    "ӏ": "l",
+    "х": "x",
+    "у": "y",
+})
 
-# Tresc ostrzezenia
+
+def normalizuj_tekst(tekst: str) -> str:
+    """Normalizuje tekst, aby rozpoznawać część zapisów omijających filtr."""
+    tekst = unicodedata.normalize("NFKC", tekst).casefold()
+    tekst = tekst.translate(ZAMIENNIKI)
+
+    # Usuwamy znaki łączące litery, np. k.u.r.w.a lub q-w-a.
+    tekst = re.sub(r"[\W_]+", "", tekst, flags=re.UNICODE)
+
+    # Ograniczamy powtarzanie tej samej litery, np. kuuuurwa.
+    tekst = re.sub(r"(.)\1{2,}", r"\1\1", tekst)
+
+    return tekst
+
+
+NORMALNE_PRZEKLENSTWA = {
+    normalizuj_tekst(slowo)
+    for slowo in PRZEKLENSTWA
+}
+
+
+def zawiera_przeklenstwo(tekst: str) -> bool:
+    """
+    Sprawdza słowa i popularne warianty zapisu.
+    Uwaga: sprawdzanie rdzeni może powodować fałszywe trafienia.
+    """
+    normalny = normalizuj_tekst(tekst)
+
+    for rdzen in NORMALNE_PRZEKLENSTWA:
+        if rdzen and rdzen in normalny:
+            return True
+
+    # Dodatkowe sprawdzanie słów oddzielonych spacjami,
+    # np. "q w a" albo "k u r w a".
+    slowa = re.findall(r"[^\W_]+", tekst.casefold(), flags=re.UNICODE)
+
+    if len(slowa) >= 3:
+        for dlugosc in range(3, min(len(slowa), 12) + 1):
+            for start in range(len(slowa) - dlugosc + 1):
+                fragment = "".join(slowa[start:start + dlugosc])
+                fragment = normalizuj_tekst(fragment)
+
+                if fragment in NORMALNE_PRZEKLENSTWA:
+                    return True
+
+    return False
+
+
+# Komunikat wysyłany po usunięciu wiadomości
 KOMUNIKAT_CIENIA = (
     "🌑 Cień wyłonił się z mroku i spryskał "
-    "{osoba} wodą. Co to za słownictwo?!! "
-    "Proszę zwracać uwagę na używany język!! 💦"
+    "{osoba} wodą. Co to za słownictwo?! "
+    "Proszę zwracać uwagę na używany język! 💦"
 )
 
 
 @bot.listen("on_message")
 async def cien_straznik_jezyka(message: discord.Message):
-
-    # Pomijaj boty
+    # Ignorujemy boty
     if message.author.bot:
         return
 
-    # Pomijaj wiadomosci prywatne
+    # Ignorujemy wiadomości prywatne
     if message.guild is None:
         return
 
-    # Immunitet dyrekcji: Dyrektor, Wicedyrektor, Mat
+    # Sprawdzamy, czy autor ma rangę odporną na filtr
     role_uzytkownika = {
         role.name.casefold()
-        for role in message.author.roles
+        for role in getattr(message.author, "roles", [])
     }
 
-    role_immunitetu = {
-        nazwa.casefold()
-        for nazwa in ROLE_IMMUNITETU_CIENIA
-    }
-
-    if role_uzytkownika & role_immunitetu:
+    if role_uzytkownika & ROLE_IMMUNITETU_CIENIA:
         return
 
-    # Sprawdz tresc wiadomosci
-    if not WZOR_PRZEKLENSTW.search(message.content):
+    # Puste wiadomości i wiadomości bez tekstu pomijamy
+    if not message.content:
         return
 
-    # Usun wiadomosc zawierajaca przeklenstwo
+    # Jeśli nie wykryto przekleństwa, nic nie robimy
+    if not zawiera_przeklenstwo(message.content):
+        return
+
+    # Usuwamy wiadomość
     try:
         await message.delete()
 
     except discord.Forbidden:
-        print(
-            "[CIEN] Brak uprawnienia Manage Messages "
-            f"na kanale {message.channel.id}."
-        )
+        print("[CIEN] Brak uprawnienia Manage Messages.")
         return
 
     except discord.NotFound:
         return
 
     except discord.HTTPException as error:
-        print(f"[CIEN] Nie udalo sie usunac wiadomosci: {error}")
+        print(f"[CIEN] Błąd usuwania wiadomości: {error}")
         return
 
-    # Wyslij ostrzezenie na tym samym kanale
+    # Wysyłamy ostrzeżenie na tym samym kanale
     try:
         await message.channel.send(
             KOMUNIKAT_CIENIA.format(
@@ -2045,12 +2175,12 @@ async def cien_straznik_jezyka(message: discord.Message):
             allowed_mentions=discord.AllowedMentions(
                 users=True,
                 roles=False,
-                everyone=False
-            )
+                everyone=False,
+            ),
         )
 
     except discord.HTTPException as error:
-        print(f"[CIEN] Nie udalo sie wyslac ostrzezenia: {error}")
+        print(f"[CIEN] Błąd wysyłania ostrzeżenia: {error}")
 
 
 # ============================================================
