@@ -1102,469 +1102,725 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 # ============================================================
-# KARTA UŻYTKOWNIKA I LEGITYMACJA UH
+# KARTY UŻYTKOWNIKÓW I LEGITYMACJE UH
+# Komendy: !karta @osoba
+#          !legitymacja @osoba
 # ============================================================
 
-KARTY_DB = Path("karty_uh.db")
+from io import BytesIO
 
-RANGI_DYREKCJI = {
+import discord
+from discord.ext import commands
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+
+# ============================================================
+# KONFIGURACJA
+# ============================================================
+
+NAZWA_UCZELNI = "Uniwersytet Huncwotów"
+
+ROLE_DYREKCJI = {
     "dyrektor",
     "wicedyrektor",
     "mat",
 }
 
+# Nazwy domów muszą odpowiadać nazwom ról na Discordzie.
+# Kolejność jest celowa: bot szuka domu, a nie Gościa lub Tiary.
+
 DOMY_UH = {
     "rogacz": {
         "nazwa": "Rogacz",
-        "kolor": (165, 38, 55),
-        "symbol": "JELEN",
+        "kolor": (180, 45, 55),
+        "hex": 0xB42D37,
     },
     "łapa": {
         "nazwa": "Łapa",
-        "kolor": (225, 185, 65),
-        "symbol": "CZARNY PIES",
-    },
-    "lapa": {
-        "nazwa": "Łapa",
-        "kolor": (225, 185, 65),
-        "symbol": "CZARNY PIES",
-    },
-    "lunatyk": {
-        "nazwa": "Lunatyk",
-        "kolor": (65, 110, 195),
-        "symbol": "WILKOŁAK",
+        "kolor": (225, 180, 55),
+        "hex": 0xE1B437,
     },
     "glizdogon": {
         "nazwa": "Glizdogon",
-        "kolor": (50, 140, 80),
-        "symbol": "SZCZUR",
+        "kolor": (65, 160, 95),
+        "hex": 0x41A05F,
+    },
+    "lunatyk": {
+        "nazwa": "Lunatyk",
+        "kolor": (75, 125, 220),
+        "hex": 0x4B7DDC,
     },
 }
 
 
 # ============================================================
-# BAZA DANYCH SQLITE
+# UPRAWNIENIA
 # ============================================================
 
-def inicjalizuj_baze_kart():
-    with sqlite3.connect(KARTY_DB) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS karty_uh (
-                guild_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                dom TEXT,
-                PRIMARY KEY (guild_id, user_id)
-            )
-        """)
-
-
-def pobierz_dom(guild_id, user_id):
-    with sqlite3.connect(KARTY_DB) as conn:
-        wynik = conn.execute("""
-            SELECT dom
-            FROM karty_uh
-            WHERE guild_id = ? AND user_id = ?
-        """, (guild_id, user_id)).fetchone()
-
-    return wynik[0] if wynik else None
-
-
-def zapisz_dom(guild_id, user_id, dom):
-    with sqlite3.connect(KARTY_DB) as conn:
-        conn.execute("""
-            INSERT INTO karty_uh (guild_id, user_id, dom)
-            VALUES (?, ?, ?)
-            ON CONFLICT(guild_id, user_id)
-            DO UPDATE SET dom = excluded.dom
-        """, (guild_id, user_id, dom))
-
-
-# ============================================================
-# UPRAWNIENIA DYREKCJI
-# ============================================================
-
-def czy_dyrekcja(member):
+def ma_dostep_do_kart(member: discord.Member) -> bool:
     return any(
-        role.name.casefold() in RANGI_DYREKCJI
+        role.name.strip().casefold() in ROLE_DYREKCJI
         for role in member.roles
     )
 
 
-def tylko_dyrekcja():
-    async def sprawdz(ctx):
-        if not ctx.guild:
-            return False
+# ============================================================
+# DOM Z ROLI UŻYTKOWNIKA
+# ============================================================
 
-        if not isinstance(ctx.author, discord.Member):
-            return False
+def pobierz_dom_uzytkownika(member: discord.Member) -> dict:
+    """
+    Wybiera dom na podstawie ról użytkownika.
 
-        if not czy_dyrekcja(ctx.author):
-            raise commands.CheckFailure(
-                "Dostęp do kart i legitymacji ma wyłącznie dyrekcja UH."
-            )
+    Role Gość i Tiara Przydziału są ignorowane.
+    Jeśli użytkownik ma Gościa i nazwę domu, wybierany
+    jest dom. Nie są generowane symbole ani rysunki domów.
+    """
 
-        return True
+    nazwy_rol = {
+        role.name.strip().casefold()
+        for role in member.roles
+    }
 
-    return commands.check(sprawdz)
+    for nazwa_domu, dane in DOMY_UH.items():
+        if nazwa_domu in nazwy_rol:
+            return dane
+
+    return {
+        "nazwa": "Nieprzypisany",
+        "kolor": (160, 160, 175),
+        "hex": 0xA0A0AF,
+    }
 
 
 # ============================================================
 # CZCIONKI
 # ============================================================
 
-def czcionka_uh(rozmiar, pogrubiona=False):
-    sciezki = (
-        [
+def pobierz_czcionke(rozmiar, pogrubiona=False):
+    if pogrubiona:
+        sciezki = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "C:/Windows/Fonts/arialbd.ttf",
         ]
-        if pogrubiona else [
+    else:
+        sciezki = [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "C:/Windows/Fonts/arial.ttf",
         ]
-    )
 
     for sciezka in sciezki:
         try:
             return ImageFont.truetype(sciezka, rozmiar)
         except OSError:
-            pass
+            continue
 
     return ImageFont.load_default()
 
 
 # ============================================================
-# SYMBOL ŁAPY — SYLWETKA CZARNEGO PSA
+# AVATAR UŻYTKOWNIKA
 # ============================================================
 
-def rysuj_czarnego_psa(rysuj, x, y, skala=1.0):
-    """
-    Rysuje stylizowaną sylwetkę czarnego psa.
-    x, y oznaczają lewy górny róg symbolu.
-    """
-    czarny = (5, 5, 9)
+async def pobierz_avatar(member: discord.Member):
+    try:
+        dane = await member.display_avatar.read()
+        return Image.open(BytesIO(dane)).convert("RGBA")
+    except Exception as error:
+        print(f"[UH KARTY] Błąd pobierania avatara: {error}")
+        return None
 
-    def elipsa(box):
-        rysuj.ellipse(
-            tuple(int(v * skala) + (x if i % 2 == 0 else y)
-                  for i, v in enumerate(box)),
-            fill=czarny,
+
+# ============================================================
+# BANER SERWERA
+# ============================================================
+
+async def pobierz_baner_serwera(guild: discord.Guild):
+    try:
+        if guild.banner is None:
+            return None
+
+        dane = await guild.banner.read()
+        return Image.open(BytesIO(dane)).convert("RGB")
+
+    except Exception as error:
+        print(f"[UH KARTY] Błąd pobierania banera: {error}")
+        return None
+
+
+# ============================================================
+# PRZYGOTOWANIE TŁA Z BANERA
+# ============================================================
+
+def przygotuj_tlo(baner, rozmiar, kolor):
+    szerokosc, wysokosc = rozmiar
+
+    if baner is not None:
+        tlo = ImageOps.fit(
+            baner,
+            rozmiar,
+            method=Image.Resampling.LANCZOS,
+        ).convert("RGBA")
+    else:
+        # Zastępcze tło tylko wtedy, gdy serwer nie ma banera.
+        tlo = Image.new(
+            "RGBA",
+            rozmiar,
+            (13, 14, 24, 255),
         )
 
-    def wielokat(punkty):
-        rysuj.polygon(
-            [(int(px * skala) + x, int(py * skala) + y)
-             for px, py in punkty],
-            fill=czarny,
-        )
-
-    # Tułów
-    elipsa((28, 55, 145, 112))
-
-    # Klatka piersiowa
-    elipsa((112, 58, 155, 103))
-
-    # Głowa
-    elipsa((130, 25, 180, 76))
-
-    # Pysk
-    wielokat([
-        (164, 44), (198, 54), (170, 66)
-    ])
-
-    # Uszy
-    wielokat([
-        (139, 34), (142, 8), (157, 31)
-    ])
-    wielokat([
-        (158, 32), (177, 14), (171, 43)
-    ])
-
-    # Przednie łapy
-    wielokat([
-        (119, 85), (139, 86), (136, 128), (122, 128)
-    ])
-    wielokat([
-        (145, 84), (160, 83), (165, 126), (150, 126)
-    ])
-
-    # Tylne łapy
-    wielokat([
-        (43, 89), (62, 91), (57, 128), (42, 128)
-    ])
-    wielokat([
-        (72, 91), (89, 90), (93, 128), (77, 128)
-    ])
-
-    # Ogon
-    wielokat([
-        (34, 66), (9, 48), (5, 31), (18, 28),
-        (25, 45), (49, 57)
-    ])
-
-
-# ============================================================
-# GENERATOR GRAFICZNEJ LEGITYMACJI
-# ============================================================
-
-def generuj_legitymacje(member, dom):
-    szerokosc, wysokosc = 1000, 600
-
-    dane_domu = DOMY_UH.get(
-        dom.casefold() if dom else "",
-        {
-            "nazwa": "Nieprzydzielony",
-            "kolor": (115, 115, 130),
-            "symbol": "UH",
-        },
+    # Przyciemnienie banera dla czytelności napisów.
+    przyciemnienie = Image.new(
+        "RGBA",
+        rozmiar,
+        (7, 8, 18, 175),
     )
 
-    nazwa_domu = dane_domu["nazwa"]
-    akcent = dane_domu["kolor"]
-    symbol = dane_domu["symbol"]
+    tlo = Image.alpha_composite(tlo, przyciemnienie)
 
-    obraz = Image.new(
-        "RGB",
-        (szerokosc, wysokosc),
-        (13, 14, 22),
-    )
-    rysuj = ImageDraw.Draw(obraz)
+    rysuj = ImageDraw.Draw(tlo)
 
-    # Srebrna ramka
+    # Ramka dopasowana kolorystycznie do domu.
     rysuj.rounded_rectangle(
-        (12, 12, 988, 588),
+        (12, 12, szerokosc - 12, wysokosc - 12),
         radius=28,
-        outline=(185, 185, 200),
-        width=3,
-    )
-
-    # Ciemny nagłówek
-    rysuj.rounded_rectangle(
-        (25, 25, 975, 145),
-        radius=20,
-        fill=(29, 30, 44),
-    )
-
-    # Pasek koloru domu
-    rysuj.rounded_rectangle(
-        (25, 25, 43, 575),
-        radius=8,
-        fill=akcent,
-    )
-
-    # Nagłówek
-    rysuj.text(
-        (70, 45),
-        "UNIWERSYTET HUNCWOTÓW",
-        font=czcionka_uh(36, True),
-        fill=(235, 235, 242),
-    )
-
-    rysuj.text(
-        (72, 100),
-        "LEGITYMACJA UCZNIOWSKA",
-        font=czcionka_uh(20),
-        fill=akcent,
-    )
-
-    # Dane użytkownika
-    rysuj.text(
-        (70, 185),
-        "UCZEŃ / UŻYTKOWNIK",
-        font=czcionka_uh(17),
-        fill=(165, 165, 185),
-    )
-
-    nazwa = member.display_name[:32]
-
-    rysuj.text(
-        (70, 220),
-        nazwa,
-        font=czcionka_uh(31, True),
-        fill=(240, 240, 248),
-    )
-
-    rysuj.text(
-        (70, 295),
-        "PRZYDZIELONY DOM",
-        font=czcionka_uh(17),
-        fill=(165, 165, 185),
-    )
-
-    rysuj.text(
-        (70, 330),
-        nazwa_domu,
-        font=czcionka_uh(30, True),
-        fill=akcent,
-    )
-
-    rysuj.text(
-        (70, 405),
-        f"SYMBOL: {symbol}",
-        font=czcionka_uh(19),
-        fill=(220, 220, 230),
-    )
-
-    rysuj.text(
-        (70, 455),
-        f"ID: {member.id}",
-        font=czcionka_uh(18),
-        fill=(185, 185, 200),
-    )
-
-    data_dolaczenia = (
-        member.joined_at.strftime("%d.%m.%Y")
-        if member.joined_at else "Brak danych"
-    )
-
-    rysuj.text(
-        (70, 495),
-        f"DOŁĄCZENIE: {data_dolaczenia}",
-        font=czcionka_uh(18),
-        fill=(185, 185, 200),
-    )
-
-    # Medalion domu
-    rysuj.ellipse(
-        (735, 180, 945, 390),
-        fill=(23, 24, 35),
-        outline=akcent,
+        outline=(*kolor, 255),
         width=5,
     )
 
-    rysuj.ellipse(
-        (750, 195, 930, 375),
-        outline=(170, 170, 190),
+    # Panel pod informacjami.
+    panel = Image.new(
+        "RGBA",
+        rozmiar,
+        (0, 0, 0, 0),
+    )
+
+    panel_rysuj = ImageDraw.Draw(panel)
+
+    panel_rysuj.rounded_rectangle(
+        (30, 30, szerokosc - 30, wysokosc - 30),
+        radius=24,
+        fill=(7, 8, 18, 150),
+        outline=(220, 220, 235, 100),
         width=2,
     )
 
-    if dom and dom.casefold() in ("łapa", "lapa"):
-        # Czarny pies w medalionie Łapy
-        rysuj_czarnego_psa(
-            rysuj,
-            x=755,
-            y=222,
-            skala=0.85,
-        )
-    else:
-        # Pozostałe domy otrzymują oznaczenie tekstowe
-        rysuj.text(
-            (780, 260),
-            symbol,
-            font=czcionka_uh(23, True),
-            fill=akcent,
-        )
+    tlo = Image.alpha_composite(tlo, panel)
 
-    rysuj.text(
-        (70, 545),
-        "UH • ARCHIWUM UCZELNI",
-        font=czcionka_uh(15),
-        fill=(140, 140, 160),
+    return tlo
+
+
+# ============================================================
+# AVATAR W OKRĘGU
+# ============================================================
+
+def wstaw_avatar(obraz, avatar, x, y, rozmiar, kolor):
+    rysuj = ImageDraw.Draw(obraz)
+
+    # Obramowanie.
+    rysuj.ellipse(
+        (
+            x - 7,
+            y - 7,
+            x + rozmiar + 7,
+            y + rozmiar + 7,
+        ),
+        fill=(*kolor, 255),
     )
 
-    plik = BytesIO()
-    obraz.save(plik, format="PNG")
-    plik.seek(0)
+    if avatar is None:
+        rysuj.text(
+            (x + 10, y + rozmiar // 2),
+            "Brak avatara",
+            font=pobierz_czcionke(16),
+            fill=(255, 255, 255, 255),
+        )
+        return
 
+    avatar_kolo = ImageOps.fit(
+        avatar,
+        (rozmiar, rozmiar),
+        method=Image.Resampling.LANCZOS,
+    ).convert("RGBA")
+
+    maska = Image.new("L", (rozmiar, rozmiar), 0)
+    maska_rysuj = ImageDraw.Draw(maska)
+
+    maska_rysuj.ellipse(
+        (0, 0, rozmiar - 1, rozmiar - 1),
+        fill=255,
+    )
+
+    obraz.paste(
+        avatar_kolo,
+        (x, y),
+        maska,
+    )
+
+
+# ============================================================
+# TEKST NA GRAFICE
+# ============================================================
+
+def tekst(rysuj, xy, wartosc, czcionka, kolor=(245, 245, 250, 255)):
+    x, y = xy
+
+    rysuj.text(
+        (x + 2, y + 2),
+        str(wartosc),
+        font=czcionka,
+        fill=(0, 0, 0, 230),
+    )
+
+    rysuj.text(
+        (x, y),
+        str(wartosc),
+        font=czcionka,
+        fill=kolor,
+    )
+
+
+def zapisz_png(obraz):
+    plik = BytesIO()
+
+    obraz.convert("RGB").save(
+        plik,
+        format="PNG",
+        optimize=True,
+    )
+
+    plik.seek(0)
     return plik
 
 
 # ============================================================
-# KOMENDA: KARTA UŻYTKOWNIKA
+# GRAFICZNA KARTA UŻYTKOWNIKA
 # ============================================================
 
-@bot.command(name="karta")
-@tylko_dyrekcja()
-async def karta_uzytkownika(ctx, member: discord.Member = None):
-    if member is None:
-        await ctx.send("Użycie: `!karta @użytkownik`")
-        return
+def generuj_karte(member, dane_domu, avatar, baner):
+    szerokosc, wysokosc = 1200, 760
+    kolor = dane_domu["kolor"]
 
-    dom = pobierz_dom(ctx.guild.id, member.id)
-
-    dane_domu = DOMY_UH.get(
-        dom.casefold() if dom else "",
-        {
-            "nazwa": "Nieprzydzielony",
-            "kolor": (115, 115, 130),
-            "symbol": "UH",
-        },
+    obraz = przygotuj_tlo(
+        baner,
+        (szerokosc, wysokosc),
+        kolor,
     )
 
-    embed = discord.Embed(
-        title="✦ KARTA UŻYTKOWNIKA UH ✦",
-        color=discord.Color.from_rgb(*dane_domu["kolor"]),
+    rysuj = ImageDraw.Draw(obraz)
+
+    # Nagłówek.
+    tekst(
+        rysuj,
+        (65, 45),
+        NAZWA_UCZELNI,
+        pobierz_czcionke(38, True),
     )
 
-    embed.set_thumbnail(url=member.display_avatar.url)
+    tekst(
+        rysuj,
+        (68, 100),
+        "KARTA UŻYTKOWNIKA",
+        pobierz_czcionke(23),
+        (215, 215, 230, 255),
+    )
 
-    embed.add_field(
-        name="Użytkownik",
-        value=member.mention,
-        inline=True,
+    rysuj.line(
+        (65, 150, 1135, 150),
+        fill=(*kolor, 255),
+        width=3,
     )
-    embed.add_field(
-        name="ID Discord",
-        value=str(member.id),
-        inline=True,
+
+    # Avatar sprawdzanego użytkownika.
+    wstaw_avatar(
+        obraz,
+        avatar,
+        75,
+        195,
+        250,
+        kolor,
     )
-    embed.add_field(
-        name="Dom",
-        value=dane_domu["nazwa"],
-        inline=True,
+
+    rysuj = ImageDraw.Draw(obraz)
+
+    # Informacje.
+    x = 385
+
+    tekst(
+        rysuj,
+        (x, 185),
+        "PSEUDONIM",
+        pobierz_czcionke(17, True),
+        (190, 190, 210, 255),
     )
-    embed.add_field(
-        name="Konto utworzone",
-        value=discord.utils.format_dt(
-            member.created_at,
-            style="D",
-        ),
-        inline=True,
+
+    tekst(
+        rysuj,
+        (x, 215),
+        member.display_name[:38],
+        pobierz_czcionke(28, True),
     )
-    embed.add_field(
-        name="Dołączył na serwer",
-        value=(
-            discord.utils.format_dt(member.joined_at, style="D")
+
+    tekst(
+        rysuj,
+        (x, 270),
+        "DOM",
+        pobierz_czcionke(17, True),
+        (190, 190, 210, 255),
+    )
+
+    tekst(
+        rysuj,
+        (x, 300),
+        dane_domu["nazwa"],
+        pobierz_czcionke(26, True),
+        (*kolor, 255),
+    )
+
+    tekst(
+        rysuj,
+        (x, 355),
+        "ID DISCORD",
+        pobierz_czcionke(17, True),
+        (190, 190, 210, 255),
+    )
+
+    tekst(
+        rysuj,
+        (x, 385),
+        str(member.id),
+        pobierz_czcionke(21),
+    )
+
+    tekst(
+        rysuj,
+        (x, 435),
+        "UTWORZENIE KONTA",
+        pobierz_czcionke(17, True),
+        (190, 190, 210, 255),
+    )
+
+    tekst(
+        rysuj,
+        (x, 465),
+        member.created_at.strftime("%d.%m.%Y"),
+        pobierz_czcionke(21),
+    )
+
+    tekst(
+        rysuj,
+        (x, 510),
+        "DOŁĄCZENIE NA SERWER",
+        pobierz_czcionke(17, True),
+        (190, 190, 210, 255),
+    )
+
+    tekst(
+        rysuj,
+        (x, 540),
+        (
+            member.joined_at.strftime("%d.%m.%Y")
             if member.joined_at
             else "Brak danych"
         ),
-        inline=True,
+        pobierz_czcionke(21),
     )
 
-    await ctx.send(embed=embed)
+    # Role użytkownika.
+    tekst(
+        rysuj,
+        (75, 485),
+        "ROLE",
+        pobierz_czcionke(17, True),
+        (190, 190, 210, 255),
+    )
+
+    role = [
+        role.name
+        for role in member.roles
+        if role.name != "@everyone"
+    ]
+
+    role_tekst = ", ".join(role for role in role if role)
+
+    if not role_tekst:
+        role_tekst = "Brak dodatkowych ról"
+
+    # Zawijanie długiej listy ról.
+    linia = ""
+    linie = []
+
+    for slowo in role_tekst.split(", "):
+        kandydat = f"{linia}, {slowo}" if linia else slowo
+
+        if rysuj.textlength(
+            kandydat,
+            font=pobierz_czcionke(15),
+        ) > 1050:
+            if linia:
+                linie.append(linia)
+            linia = slowo
+        else:
+            linia = kandydat
+
+    if linia:
+        linie.append(linia)
+
+    for indeks, linia in enumerate(linie[:5]):
+        tekst(
+            rysuj,
+            (75, 515 + indeks * 25),
+            linia,
+            pobierz_czcionke(15),
+            (235, 235, 245, 255),
+        )
+
+    rysuj.line(
+        (65, 690, 1135, 690),
+        fill=(220, 220, 235, 140),
+        width=1,
+    )
+
+    tekst(
+        rysuj,
+        (70, 710),
+        "UH • KARTA ADMINISTRACYJNA",
+        pobierz_czcionke(16, True),
+        (220, 220, 230, 255),
+    )
+
+    return zapisz_png(obraz)
 
 
 # ============================================================
-# KOMENDA: LEGITYMACJA
+# GRAFICZNA LEGITYMACJA
+# ============================================================
+
+def generuj_legitymacje(member, dane_domu, avatar, baner):
+    szerokosc, wysokosc = 1000, 600
+    kolor = dane_domu["kolor"]
+
+    obraz = przygotuj_tlo(
+        baner,
+        (szerokosc, wysokosc),
+        kolor,
+    )
+
+    rysuj = ImageDraw.Draw(obraz)
+
+    tekst(
+        rysuj,
+        (65, 45),
+        NAZWA_UCZELNI,
+        pobierz_czcionke(34, True),
+    )
+
+    tekst(
+        rysuj,
+        (68, 95),
+        "LEGITYMACJA UCZNIOWSKA",
+        pobierz_czcionke(21),
+        (215, 215, 230, 255),
+    )
+
+    rysuj.line(
+        (65, 140, 935, 140),
+        fill=(*kolor, 255),
+        width=3,
+    )
+
+    # Avatar osoby, dla której tworzona jest legitymacja.
+    wstaw_avatar(
+        obraz,
+        avatar,
+        70,
+        185,
+        220,
+        kolor,
+    )
+
+    rysuj = ImageDraw.Draw(obraz)
+    x = 345
+
+    tekst(
+        rysuj,
+        (x, 185),
+        "PSEUDONIM",
+        pobierz_czcionke(16, True),
+        (190, 190, 210, 255),
+    )
+
+    tekst(
+        rysuj,
+        (x, 215),
+        member.display_name[:30],
+        pobierz_czcionke(25, True),
+    )
+
+    tekst(
+        rysuj,
+        (x, 275),
+        "DOM",
+        pobierz_czcionke(16, True),
+        (190, 190, 210, 255),
+    )
+
+    tekst(
+        rysuj,
+        (x, 305),
+        dane_domu["nazwa"],
+        pobierz_czcionke(25, True),
+        (*kolor, 255),
+    )
+
+    tekst(
+        rysuj,
+        (x, 365),
+        "IDENTYFIKATOR UCZNIA",
+        pobierz_czcionke(16, True),
+        (190, 190, 210, 255),
+    )
+
+    tekst(
+        rysuj,
+        (x, 395),
+        str(member.id),
+        pobierz_czcionke(19),
+    )
+
+    rysuj.line(
+        (65, 515, 935, 515),
+        fill=(220, 220, 235, 140),
+        width=1,
+    )
+
+    tekst(
+        rysuj,
+        (70, 540),
+        "UNIWERSYTET HUNCWOTÓW • UH",
+        pobierz_czcionke(16, True),
+        (220, 220, 230, 255),
+    )
+
+    return zapisz_png(obraz)
+
+
+# ============================================================
+# POMOCNICZE SPRAWDZENIE I WYSŁANIE GRAFIKI
+# ============================================================
+
+async def przygotuj_dane_grafiki(ctx, member):
+    dane_domu = pobierz_dom_uzytkownika(member)
+    avatar = await pobierz_avatar(member)
+    baner = await pobierz_baner_serwera(ctx.guild)
+
+    return dane_domu, avatar, baner
+
+
+# ============================================================
+# KOMENDA !KARTA @OSOBA
+# ============================================================
+
+@bot.command(name="karta")
+async def karta(ctx, member: discord.Member = None):
+    if ctx.guild is None:
+        return
+
+    if not ma_dostep_do_kart(ctx.author):
+        await ctx.reply(
+            "Nie masz uprawnień do korzystania z tej komendy.",
+            mention_author=False,
+        )
+        return
+
+    if member is None:
+        await ctx.reply(
+            "Użycie: `!karta @osoba`",
+            mention_author=False,
+        )
+        return
+
+    try:
+        dane_domu, avatar, baner = await przygotuj_dane_grafiki(
+            ctx,
+            member,
+        )
+
+        plik = generuj_karte(
+            member,
+            dane_domu,
+            avatar,
+            baner,
+        )
+
+        await ctx.reply(
+            file=discord.File(
+                plik,
+                filename=f"karta_UH_{member.id}.png",
+            ),
+            mention_author=False,
+        )
+
+    except Exception as error:
+        print(f"[UH KARTY] Błąd komendy karta: {error}")
+
+        await ctx.reply(
+            "Nie udało się wygenerować karty. Sprawdź logi bota.",
+            mention_author=False,
+        )
+
+
+# ============================================================
+# KOMENDA !LEGITYMACJA @OSOBA
 # ============================================================
 
 @bot.command(name="legitymacja")
-@tylko_dyrekcja()
-async def legitymacja_uzytkownika(
-    ctx,
-    member: discord.Member = None,
-):
-    if member is None:
-        await ctx.send("Użycie: `!legitymacja @użytkownik`")
+async def legitymacja(ctx, member: discord.Member = None):
+    if ctx.guild is None:
         return
 
-    dom = pobierz_dom(ctx.guild.id, member.id)
-    plik = generuj_legitymacje(member, dom)
+    if not ma_dostep_do_kart(ctx.author):
+        await ctx.reply(
+            "Nie masz uprawnień do korzystania z tej komendy.",
+            mention_author=False,
+        )
+        return
 
-    await ctx.send(
-        content=f"**Legitymacja UH — {member.display_name}**",
-        file=discord.File(
-            plik,
-            filename=f"legitymacja_{member.id}.png",
-        ),
-    )
+    if member is None:
+        await ctx.reply(
+            "Użycie: `!legitymacja @osoba`",
+            mention_author=False,
+        )
+        return
 
+    try:
+        dane_domu, avatar, baner = await przygotuj_dane_grafiki(
+            ctx,
+            member,
+        )
 
-# ============================================================
-# INICJALIZACJA
-# ============================================================
+        plik = generuj_legitymacje(
+            member,
+            dane_domu,
+            avatar,
+            baner,
+        )
 
-inicjalizuj_baze_kart()
+        await ctx.reply(
+            file=discord.File(
+                plik,
+                filename=f"legitymacja_UH_{member.id}.png",
+            ),
+            mention_author=False,
+        )
+
+    except Exception as error:
+        print(f"[UH KARTY] Błąd komendy legitymacja: {error}")
+
+        await ctx.reply(
+            "Nie udało się wygenerować legitymacji. Sprawdź logi bota.",
+            mention_author=False,
+        )
 
 # ============================================================
 # UH — SYSTEM ZATWIERDZANIA ZMIANY NICKU
