@@ -1566,6 +1566,385 @@ async def legitymacja_uzytkownika(
 
 inicjalizuj_baze_kart()
 
+# ============================================================
+# UH — SYSTEM ZATWIERDZANIA ZMIANY NICKU
+# discord.py
+# ============================================================
+
+import discord
+import json
+import asyncio
+import uuid
+from pathlib import Path
+
+# ============================================================
+# KONFIGURACJA
+# ============================================================
+
+# Kanał, na który trafiają wnioski
+NICK_APPROVAL_CHANNEL_ID = 1563791093600882688
+
+# Osoby uprawnione do akceptacji — Discord ID
+NICK_APPROVER_IDS = {
+    735961962067918898,
+    839427958166126593,
+    1170088373713633332,
+}
+
+# Plik przechowujący oczekujące wnioski
+NICK_REQUESTS_FILE = Path("uh_nick_requests.json")
+
+# ============================================================
+# DANE SYSTEMU
+# ============================================================
+
+nick_requests = {}
+nick_expected_changes = {}
+nick_lock = asyncio.Lock()
+nick_views_registered = False
+
+
+def save_nick_requests():
+    """Zapisuje wnioski na dysku."""
+    NICK_REQUESTS_FILE.write_text(
+        json.dumps(
+            nick_requests,
+            ensure_ascii=False,
+            indent=2
+        ),
+        encoding="utf-8"
+    )
+
+
+def load_nick_requests():
+    """Wczytuje wnioski po restarcie bota."""
+    global nick_requests
+
+    if not NICK_REQUESTS_FILE.exists():
+        nick_requests = {}
+        return
+
+    try:
+        nick_requests = json.loads(
+            NICK_REQUESTS_FILE.read_text(encoding="utf-8")
+        )
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"UH: Błąd odczytu wniosków: {exc}")
+        nick_requests = {}
+
+
+def is_nick_approver(user_id: int) -> bool:
+    """Sprawdza Discord ID osoby zatwierdzającej."""
+    return user_id in NICK_APPROVER_IDS
+
+
+def display_nick(nick):
+    return nick if nick is not None else "(domyślna nazwa konta)"
+
+
+# ============================================================
+# PRZYCISKI ZATWIERDZANIA
+# ============================================================
+
+class NickApprovalView(discord.ui.View):
+
+    def __init__(self, request_id: str):
+        super().__init__(timeout=None)
+        self.request_id = request_id
+
+        approve_button = discord.ui.Button(
+            label="Zatwierdź",
+            style=discord.ButtonStyle.success,
+            emoji="✅",
+            custom_id=f"uh_nick:approve:{request_id}"
+        )
+        approve_button.callback = self.approve_callback
+        self.add_item(approve_button)
+
+        reject_button = discord.ui.Button(
+            label="Odrzuć",
+            style=discord.ButtonStyle.danger,
+            emoji="❌",
+            custom_id=f"uh_nick:reject:{request_id}"
+        )
+        reject_button.callback = self.reject_callback
+        self.add_item(reject_button)
+
+    async def get_request(self, interaction):
+        if not is_nick_approver(interaction.user.id):
+            await interaction.response.send_message(
+                "❌ Nie masz uprawnień do zatwierdzania nicków UH.",
+                ephemeral=True
+            )
+            return None
+
+        request = nick_requests.get(self.request_id)
+
+        if request is None:
+            await interaction.response.send_message(
+                "Ten wniosek został już rozpatrzony "
+                "albo nie istnieje.",
+                ephemeral=True
+            )
+            return None
+
+        return request
+
+    async def approve_callback(
+        self,
+        interaction: discord.Interaction
+    ):
+        async with nick_lock:
+            request = await self.get_request(interaction)
+
+            if request is None:
+                return
+
+            guild = bot.get_guild(request["guild_id"])
+
+            if guild is None:
+                await interaction.response.send_message(
+                    "Nie znaleziono serwera.",
+                    ephemeral=True
+                )
+                return
+
+            member = guild.get_member(request["member_id"])
+
+            if member is None:
+                await interaction.response.send_message(
+                    "Użytkownik nie znajduje się już na serwerze.",
+                    ephemeral=True
+                )
+                return
+
+            try:
+                nick_expected_changes[member.id] = (
+                    request["requested_nick"]
+                )
+
+                await member.edit(
+                    nick=request["requested_nick"],
+                    reason=(
+                        "UH: zatwierdzenie wniosku o zmianę nicku "
+                        f"przez {interaction.user.id}"
+                    )
+                )
+
+            except discord.HTTPException as exc:
+                nick_expected_changes.pop(member.id, None)
+
+                await interaction.response.send_message(
+                    "Nie udało się ustawić nicku. Sprawdź "
+                    "uprawnienia bota i hierarchię ról Discorda.",
+                    ephemeral=True
+                )
+
+                print(f"UH: Błąd zatwierdzania nicku: {exc}")
+                return
+
+            del nick_requests[self.request_id]
+            save_nick_requests()
+
+            self.disable_all_items()
+
+            embed = interaction.message.embeds[0]
+            embed.color = discord.Color.green()
+            embed.add_field(
+                name="✅ Decyzja",
+                value=(
+                    f"Zatwierdzono przez "
+                    f"{interaction.user.mention}"
+                ),
+                inline=False
+            )
+
+            await interaction.response.edit_message(
+                embed=embed,
+                view=self
+            )
+
+    async def reject_callback(
+        self,
+        interaction: discord.Interaction
+    ):
+        async with nick_lock:
+            request = await self.get_request(interaction)
+
+            if request is None:
+                return
+
+            del nick_requests[self.request_id]
+            save_nick_requests()
+
+            self.disable_all_items()
+
+            embed = interaction.message.embeds[0]
+            embed.color = discord.Color.red()
+            embed.add_field(
+                name="❌ Decyzja",
+                value=(
+                    f"Odrzucono przez "
+                    f"{interaction.user.mention}"
+                ),
+                inline=False
+            )
+
+            await interaction.response.edit_message(
+                embed=embed,
+                view=self
+            )
+
+
+# ============================================================
+# WYKRYWANIE ZMIANY NICKU
+# ============================================================
+
+@bot.listen("on_member_update")
+async def uh_detect_nick_change(before, after):
+
+    # Interesuje nas wyłącznie zmiana pseudonimu serwerowego.
+    if before.nick == after.nick:
+        return
+
+    # Zmiana wykonana przez naszego bota.
+    if (
+        after.id in nick_expected_changes
+        and nick_expected_changes[after.id] == after.nick
+    ):
+        nick_expected_changes.pop(after.id, None)
+        return
+
+    old_nick = before.nick
+    requested_nick = after.nick
+
+    # Najpierw cofamy zmianę.
+    try:
+        nick_expected_changes[after.id] = old_nick
+
+        await after.edit(
+            nick=old_nick,
+            reason=(
+                "UH: zmiana nicku wymaga zatwierdzenia "
+                "przez uprawnioną osobę"
+            )
+        )
+
+    except discord.HTTPException as exc:
+        nick_expected_changes.pop(after.id, None)
+        print(
+            f"UH: Nie udało się cofnąć nicku "
+            f"użytkownika {after.id}: {exc}"
+        )
+        return
+
+    # Jeden otwarty wniosek na użytkownika na danym serwerze.
+    existing_request = any(
+        request["guild_id"] == after.guild.id
+        and request["member_id"] == after.id
+        for request in nick_requests.values()
+    )
+
+    if existing_request:
+        return
+
+    channel = bot.get_channel(NICK_APPROVAL_CHANNEL_ID)
+
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(
+                NICK_APPROVAL_CHANNEL_ID
+            )
+        except discord.HTTPException as exc:
+            print(f"UH: Nie znaleziono kanału wniosków: {exc}")
+            return
+
+    request_id = uuid.uuid4().hex[:12]
+
+    nick_requests[request_id] = {
+        "guild_id": after.guild.id,
+        "member_id": after.id,
+        "old_nick": old_nick,
+        "requested_nick": requested_nick,
+        "message_id": None
+    }
+
+    save_nick_requests()
+
+    embed = discord.Embed(
+        title="📝 Wniosek o zmianę nicku UH",
+        description=(
+            "Wykryto zmianę pseudonimu serwerowego. "
+            "Poprzedni nick został przywrócony do czasu decyzji."
+        ),
+        color=discord.Color.blurple()
+    )
+
+    embed.add_field(
+        name="Użytkownik",
+        value=f"{after.mention}\n`{after.id}`",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Poprzedni nick",
+        value=display_nick(old_nick),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Proponowany nick",
+        value=display_nick(requested_nick),
+        inline=True
+    )
+
+    embed.set_footer(
+        text=f"ID wniosku: {request_id}"
+    )
+
+    try:
+        message = await channel.send(
+            embed=embed,
+            view=NickApprovalView(request_id)
+        )
+
+        nick_requests[request_id]["message_id"] = message.id
+        save_nick_requests()
+
+    except discord.HTTPException as exc:
+        print(f"UH: Nie udało się wysłać wniosku: {exc}")
+
+
+# ============================================================
+# URUCHAMIANIE SYSTEMU I PRZYCISKI PO RESTARCIE
+# ============================================================
+
+@bot.listen("on_ready")
+async def uh_register_nick_views():
+    global nick_views_registered
+
+    if nick_views_registered:
+        return
+
+    load_nick_requests()
+
+    for request_id in nick_requests:
+        bot.add_view(
+            NickApprovalView(request_id)
+        )
+
+    nick_views_registered = True
+
+    print("UH: System zatwierdzania nicków uruchomiony.")
+    print(
+        "UH: Uprawnione Discord ID:",
+        sorted(NICK_APPROVER_IDS)
+    )
+    print(
+        "UH: Kanał wniosków:",
+        NICK_APPROVAL_CHANNEL_ID
+    )
+
 
 # ============================================================
 # URUCHOMIENIE — TYLKO RAZ, NA KOŃCU PLIKU
