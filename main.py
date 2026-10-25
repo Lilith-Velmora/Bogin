@@ -2485,6 +2485,11 @@ async def cien_straznik_jezyka(message: discord.Message):
     except discord.HTTPException as error:
         print(f"[CIEN] Błąd wysyłania ostrzeżenia: {error}")
 
+@bot.command(name="Cerber")
+async def cerber(ctx):
+    await ctx.send(
+        "[*Cień spuścił Cerbera ze smyczy, a ten od razu zaczął gonić Lillianę*]"
+    )
 
 # ============================================================
 # URUCHOMIENIE — TYLKO RAZ, NA KOŃCU PLIKU
