@@ -2420,15 +2420,15 @@ def zawiera_przeklenstwo(tekst: str) -> bool:
 
 
 # Komunikat wysyłany po usunięciu wiadomości
-KOMUNIKAT_CIENIA = (
-    "🌑 Cień wyłonił się z mroku i spryskał "
+KOMUNIKAT_HUNCWOTKA = (
+    "Huncwotek wyłonił się z mroku i spryskał "
     "{osoba} wodą. Co to za słownictwo?! "
     "Proszę zwracać uwagę na używany język! 💦"
 )
 
 
 @bot.listen("on_message")
-async def cien_straznik_jezyka(message: discord.Message):
+async def huncwotek_straznik_jezyka(message: discord.Message):
     # Ignorujemy boty
     if message.author.bot:
         return
@@ -2459,20 +2459,20 @@ async def cien_straznik_jezyka(message: discord.Message):
         await message.delete()
 
     except discord.Forbidden:
-        print("[CIEN] Brak uprawnienia Manage Messages.")
+        print("[HUNCWOTEK] Brak uprawnienia Manage Messages.")
         return
 
     except discord.NotFound:
         return
 
     except discord.HTTPException as error:
-        print(f"[CIEN] Błąd usuwania wiadomości: {error}")
+        print(f"[HUNCWOTEK] Błąd usuwania wiadomości: {error}")
         return
 
     # Wysyłamy ostrzeżenie na tym samym kanale
     try:
         await message.channel.send(
-            KOMUNIKAT_CIENIA.format(
+            KOMUNIKAT_HUNCWOTKA.format(
                 osoba=message.author.mention
             ),
             allowed_mentions=discord.AllowedMentions(
@@ -2483,12 +2483,12 @@ async def cien_straznik_jezyka(message: discord.Message):
         )
 
     except discord.HTTPException as error:
-        print(f"[CIEN] Błąd wysyłania ostrzeżenia: {error}")
+        print(f"[HUNCWOTEK] Błąd wysyłania ostrzeżenia: {error}")
 
 @bot.command(name="Cerber")
 async def cerber(ctx):
     await ctx.send(
-        "[*Cień spuścił Cerbera ze smyczy, a ten od razu zaczął gonić Lillianę*]"
+        "[*Huncwotek spuścił Cerbera ze smyczy, a ten od razu zaczął gonić Lillianę*]"
     )
 
 import discord
